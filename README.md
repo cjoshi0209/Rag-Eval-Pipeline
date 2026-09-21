@@ -1,77 +1,62 @@
-<div align="center">
-
 # RAG Evaluation Pipeline
 
-**Production-grade LLM evaluation system with hallucination scoring, context faithfulness tracking, and real-time observability.**
+Lightweight LLM evaluation system for RAG pipelines — hallucination scoring, context faithfulness tracking, and retrieval-quality observability. Runs fully offline by default (no paid API key required); an optional GPT-4o-mini judge can be enabled for higher-fidelity scoring.
 
-[![Python](https://img.shields.io/badge/Python-3.11-3776AB?style=flat-square&logo=python&logoColor=white)](https://python.org)
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.104-009688?style=flat-square&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
-[![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?style=flat-square&logo=docker&logoColor=white)](https://docker.com)
-[![License](https://img.shields.io/badge/License-MIT-7C3AED?style=flat-square)](LICENSE)
-
-[Overview](#-overview) · [Architecture](#-architecture) · [Metrics](#-evaluation-metrics) · [Quick Start](#-quick-start) · [API Docs](#-api-reference)
-
-</div>
-
----
+Overview · Architecture · Metrics · Quick Start · API Docs
 
 ## Overview
 
-Most RAG systems ship without any quality gate. Answers look plausible but silently hallucinate, drift off context, or degrade as the knowledge base grows. This pipeline gives you **observable, measurable RAG quality** — the same evaluation infrastructure used at ORIXEN.AI for client deployments.
+Most RAG systems ship without any quality gate. Answers look plausible but silently hallucinate, drift off context, or degrade as the knowledge base grows. This pipeline gives you an observable, measurable RAG quality signal you can wire into CI or a dashboard.
 
-**What this solves:**
+What this solves:
 - Catching hallucinations before they reach users
 - Tracking retrieval quality degradation over time
 - Getting cost + latency visibility per query
 - Providing a baseline to A/B test chunking strategies, embeddings, and prompts
 
----
-
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                    RAG Eval Pipeline                     │
-│                                                          │
-│  Query ──► Retriever ──► Context ──► LLM ──► Response   │
-│               │                              │           │
-│               ▼                              ▼           │
-│         [Retrieval Eval]            [Generation Eval]    │
-│         · Context recall           · Faithfulness score  │
-│         · MRR / Hit@K              · Answer relevance    │
-│         · Latency                  · Hallucination flag  │
-│               │                              │           │
-│               └──────────► Metrics DB ◄──────┘           │
-│                                  │                       │
-│                            Dashboard UI                  │
-└─────────────────────────────────────────────────────────┘
+  Query --> Retriever --> Context --> LLM --> Response
+               |                        |
+               v                        v
+        [Retrieval Eval]         [Generation Eval]
+        - Context recall         - Faithfulness score
+        - Cosine similarity      - Answer relevance
+        - Latency                - Hallucination flag
+               |                        |
+               +---------> SQLite Metrics DB <---------+
+                                  |
+                          /metrics endpoint
 ```
 
----
+Two scoring backends, selected by `USE_OPENAI`:
+- **Offline (default)** — pure-Python TF-IDF-style term vectors + cosine similarity (`rag_eval/lexical.py`). No dependencies, no API key, deterministic.
+- **LLM-as-judge (optional)** — GPT-4o-mini grades the same triple when `USE_OPENAI=true` and `OPENAI_API_KEY` is set (`rag_eval/openai_judge.py`).
 
 ## Evaluation Metrics
 
-| Metric | Description | Threshold |
-|---|---|---|
-| **Faithfulness** | Is the answer grounded in retrieved context? | > 0.85 |
-| **Answer Relevance** | Does the answer address the question? | > 0.80 |
-| **Context Recall** | Did retrieval surface the right chunks? | > 0.75 |
-| **Hallucination Rate** | Claims not supported by context | < 0.10 |
-| **Latency P95** | End-to-end response time | < 2000ms |
-| **Token Cost** | Cost per query (GPT-4 pricing) | Tracked |
+| Metric | Description |
+|---|---|
+| Faithfulness | Is the response grounded in the retrieved context? (cosine similarity between response and context term vectors) |
+| Answer Relevance | Does the response address the query? |
+| Context Recall | Did retrieval surface chunks relevant to the query? |
+| Hallucination Detected | `faithfulness` below a configurable threshold |
+| Latency (ms) | Wall-clock time for the scoring call itself |
+| Token Cost (USD) | Estimated from token count × configurable per-1K pricing |
 
----
+The offline scorer's thresholds are tuned for lexical overlap, not semantic similarity — swap in the OpenAI judge (or a real embedding model) for production-grade accuracy; the interface (`Evaluator.evaluate`) stays the same either way.
 
 ## Quick Start
 
 ```bash
 # Clone and setup
-git clone https://github.com/cjoshi0209/rag-eval-pipeline
-cd rag-eval-pipeline
+git clone https://github.com/cjoshi0209/Rag-Eval-Pipeline
+cd Rag-Eval-Pipeline
 
 # Environment
 cp .env.example .env
-# Add OPENAI_API_KEY, DATABASE_URL
+# Optional: set OPENAI_API_KEY + USE_OPENAI=true for the LLM-as-judge scorer
 
 # Docker (recommended)
 docker-compose up -d
@@ -81,58 +66,56 @@ pip install -r requirements.txt
 uvicorn app.main:app --reload
 ```
 
-API is live at `http://localhost:8000` · Docs at `http://localhost:8000/docs`
+API is live at http://localhost:8000 · Docs at http://localhost:8000/docs
 
----
+Run the test suite:
+
+```bash
+pip install -r requirements.txt
+pytest -v
+```
 
 ## Usage
 
 ```python
 from rag_eval import Evaluator
 
-evaluator = Evaluator(api_key="sk-...")
+evaluator = Evaluator()  # offline by default; pass use_openai=True + api_key for GPT-4o-mini judge
 
 result = evaluator.evaluate(
     query="What is our refund policy?",
-    context=retrieved_chunks,
-    response=llm_response
+    context=["Refunds are processed within 30 days of purchase with a receipt."],
+    response="You can get a refund within 30 days if you have a receipt.",
 )
 
-print(result)
+print(result.to_dict())
 # {
-#   "faithfulness": 0.92,
-#   "answer_relevance": 0.88,
+#   "query": "What is our refund policy?",
+#   "faithfulness": 0.83,
+#   "answer_relevance": 0.71,
+#   "context_recall": 0.65,
 #   "hallucination_detected": False,
-#   "latency_ms": 847,
-#   "token_cost_usd": 0.0023
+#   "latency_ms": 0.04,
+#   "token_cost_usd": 0.000123,
+#   "unsupported_claims": []
 # }
 ```
-
----
 
 ## API Reference
 
 | Endpoint | Method | Description |
 |---|---|---|
-| `/evaluate` | POST | Run full evaluation on a query-response pair |
-| `/metrics` | GET | Retrieve aggregated metrics dashboard data |
-| `/metrics/history` | GET | Time-series quality trend data |
+| `/evaluate` | POST | Run evaluation on a query/context/response triple, persist it |
+| `/metrics` | GET | Aggregated metrics across all recorded evaluations |
+| `/metrics/history` | GET | Most recent evaluations, newest first |
 | `/health` | GET | Service health check |
-
----
 
 ## Stack
 
-`Python 3.11` · `FastAPI` · `LangChain` · `OpenAI GPT-4` · `PostgreSQL` · `Redis` · `Docker` · `Prometheus`
-
----
+Python 3.11 · FastAPI · SQLite · Docker · pytest · (optional) OpenAI GPT-4o-mini
 
 ## Related
 
-Built as part of the evaluation infrastructure at [ORIXEN.AI](https://orixenai.in). If you're building production RAG systems and want to talk evaluation strategy, reach out on [LinkedIn](https://linkedin.com/in/chinmay-joshi-62b873212).
+Built as part of the evaluation infrastructure work at ORIXEN.AI. If you're building production RAG systems and want to talk evaluation strategy, reach out on LinkedIn.
 
----
-
-<div align="center">
-Built by <a href="https://joshichinmay.tech">Chinmay Joshi</a> · <a href="https://orixenai.in">ORIXEN.AI</a>
-</div>
+Built by Chinmay Joshi · ORIXEN.AI
