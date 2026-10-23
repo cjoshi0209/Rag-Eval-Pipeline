@@ -2,7 +2,9 @@
 
 Lightweight LLM evaluation system for RAG pipelines — hallucination scoring, context faithfulness tracking, and retrieval-quality observability. Runs fully offline by default (no paid API key required); an optional GPT-4o-mini judge can be enabled for higher-fidelity scoring.
 
-Overview · Architecture · Metrics · Quick Start · API Docs
+[![CI](https://github.com/cjoshi0209/Rag-Eval-Pipeline/actions/workflows/ci.yml/badge.svg)](https://github.com/cjoshi0209/Rag-Eval-Pipeline/actions/workflows/ci.yml)
+
+[Overview](#overview) · [Architecture](#architecture) · [Metrics](#evaluation-metrics) · [Quick Start](#quick-start) · [API Reference](#api-reference)
 
 ## Overview
 
